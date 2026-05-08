@@ -8,35 +8,23 @@ from streamlit_gsheets import GSheetsConnection
 st.set_page_config(page_title="Mes Heures Sup", page_icon="⏱️")
 st.title("⏱️ Suivi des Heures")
 
-# --- 2. CONNEXION ---
-@st.cache_resource
-def connect_gsheets():
-    # On récupère le bloc des secrets
-    s = dict(st.secrets["connections"]["gsheets"])
-    
-    # Nettoyage de la clé PEM
-    if "private_key" in s:
-        s["private_key"] = s["private_key"].replace("\\n", "\n").strip()
-    
-    # On supprime 'type' pour éviter le conflit de paramètres
-    if "type" in s:
-        del s["type"]
-    
-    return st.connection("gsheets", type=GSheetsConnection, **s)
-
+# --- 2. CONNEXION (Méthode Native) ---
+# On ne passe aucun argument supplémentaire ici. 
+# Streamlit va chercher automatiquement la section [connections.gsheets] dans tes secrets.
 try:
-    conn = connect_gsheets()
+    conn = st.connection("gsheets", type=GSheetsConnection)
     url = st.secrets["connections"]["gsheets"]["spreadsheet"]
+    
     df_existant = conn.read(spreadsheet=url, ttl=0)
     if df_existant is not None:
         df_existant = df_existant.dropna(how="all")
     else:
         df_existant = pd.DataFrame(columns=["Date", "Heures", "Gain"])
 except Exception as e:
-    st.error(f"⚠️ Erreur : {e}")
+    st.error(f"⚠️ Erreur de connexion : {e}")
     df_existant = pd.DataFrame(columns=["Date", "Heures", "Gain"])
 
-# --- 3. INTERFACE ---
+# --- 3. PARAMÈTRES & FORMULAIRE ---
 with st.sidebar:
     st.header("⚙️ Paramètres")
     t_base = st.number_input("Taux horaire base (€)", value=15.0)
@@ -52,22 +40,13 @@ with st.form("form_saisie", clear_on_submit=True):
     submit = st.form_submit_button("Enregistrer")
 
 if submit:
-    # Calcul de la durée
     start = datetime.combine(d, h1)
     end = datetime.combine(d, h2)
-    if end <= start: 
-        end += timedelta(days=1)
+    if end <= start: end += timedelta(days=1)
     h_tot = (end - start).total_seconds() / 3600
-    
-    # Calcul du gain (majoré à 50% par défaut pour le test)
     g_tot = round(h_tot * t_base * 1.5, 2)
     
-    nouvelle_ligne = pd.DataFrame([{
-        "Date": d.strftime('%Y-%m-%d'), 
-        "Heures": float(h_tot), 
-        "Gain": float(g_tot)
-    }])
-    
+    nouvelle_ligne = pd.DataFrame([{"Date": d.strftime('%Y-%m-%d'), "Heures": float(h_tot), "Gain": float(g_tot)}])
     df_final = pd.concat([df_existant, nouvelle_ligne], ignore_index=True)
     
     try:
@@ -80,6 +59,5 @@ if submit:
 # --- 4. AFFICHAGE ---
 if not df_existant.empty:
     st.divider()
-    # Tri par date et affichage (Parenthèses bien fermées ici)
     df_tri = df_existant.sort_values('Date', ascending=False)
     st.dataframe(df_tri, use_container_width=True, hide_index=True)
