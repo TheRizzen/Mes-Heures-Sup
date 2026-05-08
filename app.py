@@ -7,9 +7,9 @@ from streamlit_gsheets import GSheetsConnection
 # --- 1. CONFIGURATION ---
 st.set_page_config(page_title="Suivi Heures Sup Enedis", page_icon="⏱️", layout="wide")
 
-# Paramètres issus de ta fiche de paie d'avril 2026
-TX_HORAIRE_DEFAUT = 14.18  # Ton TH selon la fiche 
-TX_RETENUE_HS = 0.067      # 6.7% de retenue (CSG/CRDS) sur les HS défiscalisées [cite: 63, 67]
+# Paramètres issus de ta fiche de paie d'avril 2026 [cite: 28, 61, 72]
+TX_HORAIRE_DEFAUT = 14.18  # [cite: 28, 61]
+TX_RETENUE_HS = 0.067      # Calculé selon CSG/CRDS et exonérations [cite: 63, 67]
 
 MOIS_FR = {
     1: "Janvier", 2: "Février", 3: "Mars", 4: "Avril", 5: "Mai", 6: "Juin",
@@ -37,9 +37,13 @@ try:
     if df_raw is not None:
         df_raw = df_raw.dropna(how="all")
         df_raw = nettoyer_dataframe(df_raw)
+        # On s'assure que 'Repas' est traité comme un nombre
+        if 'Repas' in df_raw.columns:
+            df_raw['Repas'] = pd.to_numeric(df_raw['Repas'], errors='coerce').fillna(0)
+            
         for c in ['H_50', 'H_75', 'H_100', 'H_125', 'Taux_Base', 'Repas']:
             if c not in df_raw.columns: 
-                df_raw[c] = 0.0 if 'H_' in c else ("Non" if c=='Repas' else TX_HORAIRE_DEFAUT)
+                df_raw[c] = 0.0 if c != 'Taux_Base' else TX_HORAIRE_DEFAUT
     else:
         df_raw = pd.DataFrame(columns=["Date", "Heures", "Gain", "Taux_Base", "Repas", "H_50", "H_75", "H_100", "H_125"])
 except Exception as e:
@@ -60,24 +64,33 @@ def calculer_session(date_j, debut, fin, t_base, feries):
         h = current.hour
         est_nuit = (h >= 20 or h < 6)
         
-        # Majorations Enedis
         if est_special:
-            maj = 125 if est_nuit else 75
             mult = 2.25 if est_nuit else 1.75
+            maj = 125 if est_nuit else 75
         else:
-            maj = 100 if est_nuit else 50
             mult = 2.00 if est_nuit else 1.50
+            maj = 100 if est_nuit else 50
             
         ventilation[maj] += (pas / 60)
         gain_total += (pas / 60) * (t_base * mult)
         current += timedelta(minutes=pas)
     
-    # Condition Repas : 2h de présence entre 19h et 21h
-    r_start, r_end = datetime.combine(date_j, time(19, 0)), datetime.combine(date_j, time(21, 0))
-    inter_s, inter_e = max(start, r_start), min(end, r_end)
-    repas = "Oui" if (inter_e > inter_s and (inter_e - inter_s).total_seconds()/3600 >= 2.0) else "Non"
+    # --- LOGIQUE REPAS CUMULABLE ---
+    def verifier_plage(p_start_time, p_end_time):
+        p_start = datetime.combine(date_j, p_start_time)
+        p_end = datetime.combine(date_j, p_end_time)
+        inter_s, inter_e = max(start, p_start), min(end, p_end)
+        if inter_e > inter_s:
+            return (inter_e - inter_s).total_seconds() / 3600
+        return 0
+
+    nb_repas = 0
+    if verifier_plage(time(11, 0), time(13, 0)) >= 2.0:
+        nb_repas += 1
+    if verifier_plage(time(19, 0), time(21, 0)) >= 2.0:
+        nb_repas += 1
             
-    return round((end - start).total_seconds()/3600, 2), round(gain_total, 2), repas, ventilation
+    return round((end - start).total_seconds()/3600, 2), round(gain_total, 2), nb_repas, ventilation
 
 # --- 4. INTERFACE ---
 with st.sidebar:
@@ -90,17 +103,18 @@ with st.sidebar:
 # --- MODE : SAISIE ---
 if mode == "Saisie":
     st.header("➕ Enregistrer une intervention")
+    st.info("💡 Si vous travaillez en deux fois (ex: matin et soir), enregistrez deux saisies distinctes sur la même date.")
     with st.form("f_saisie", clear_on_submit=True):
         col1, col2, col3 = st.columns(3)
         d = col1.date_input("Date", datetime.now())
-        h1 = col2.time_input("Début", time(18, 0))
-        h2 = col3.time_input("Fin", time(22, 0))
+        h1 = col2.time_input("Début", time(10, 0))
+        h2 = col3.time_input("Fin", time(14, 0))
         if st.form_submit_button("Valider la saisie"):
-            h_tot, g_tot, repas_ok, vent = calculer_session(d, h1, h2, taux_actuel, feries_liste)
+            h_tot, g_tot, repas_count, vent = calculer_session(d, h1, h2, taux_actuel, feries_liste)
             
             new_row = pd.DataFrame([{
                 "Date": d.strftime('%d/%m/%Y'), "Heures": h_tot, "Gain": g_tot, 
-                "Taux_Base": taux_actuel, "Repas": repas_ok,
+                "Taux_Base": taux_actuel, "Repas": repas_count,
                 "H_50": vent[50], "H_75": vent[75], "H_100": vent[100], "H_125": vent[125]
             }])
             
@@ -108,7 +122,7 @@ if mode == "Saisie":
             df_export['Date'] = df_export['Date'].dt.strftime('%d/%m/%Y')
             df_final = pd.concat([df_export, new_row], ignore_index=True)
             conn.update(spreadsheet=url, data=df_final)
-            st.success(f"Enregistré ! Gain Brut : {g_tot}€")
+            st.success(f"Enregistré ! Repas validé pour cette session : {repas_count}")
             st.rerun()
 
 # --- MODE : GESTION ---
@@ -118,7 +132,10 @@ elif mode == "Gestion":
         df_edit = df_raw.copy()
         df_edit['Date'] = pd.to_datetime(df_edit['Date'])
         edited = st.data_editor(df_edit, num_rows="dynamic", use_container_width=True,
-                               column_config={"Date": st.column_config.DateColumn("Date", format="DD/MM/YYYY")})
+                               column_config={
+                                   "Date": st.column_config.DateColumn("Date", format="DD/MM/YYYY"),
+                                   "Repas": st.column_config.NumberColumn("Nb Repas", min_value=0, max_value=2, step=1)
+                               })
         if st.button("Enregistrer les modifications"):
             edited['Date'] = pd.to_datetime(edited['Date']).dt.strftime('%d/%m/%Y')
             conn.update(spreadsheet=url, data=edited)
@@ -138,28 +155,27 @@ elif mode == "Récapitulatif":
         sel_m_num = [k for k, v in MOIS_FR.items() if v == sel_m_nom][0]
         df_m = df_ans[df_ans['Mois_Num'] == sel_m_num]
 
-        # Calculs
         brut_total = df_m['Gain'].sum()
         net_estime = brut_total * (1 - TX_RETENUE_HS)
 
-        # Affichage
         st.subheader(f"📈 Bilan {sel_m_nom} {sel_an}")
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Gain Brut", f"{brut_total:.2f} €")
-        m2.metric("Net Estimé (≈)", f"{net_estime:.2f} €", help="Calculé avec 6.7% de charges sur les HS")
-        m3.metric("Heures", f"{df_m['Heures'].sum():.2f} h")
-        m4.metric("Repas", len(df_m[df_m['Repas'] == "Oui"]))
+        m1.metric("Gain Brut HS", f"{brut_total:.2f} €")
+        m2.metric("Net HS Est. (≈)", f"{net_estime:.2f} €")
+        m3.metric("Heures Total", f"{df_m['Heures'].sum():.2f} h")
+        m4.metric("Total Repas", f"{int(df_m['Repas'].sum())}")
         
         st.divider()
-        st.write("**Ventilation par majoration (Heures) :**")
+        st.write("**Détail des heures par majoration :**")
         v1, v2, v3, v4 = st.columns(4)
-        v1.write(f"**50% :** {df_m['H_50'].sum()}h")
-        v2.write(f"**75% :** {df_m['H_75'].sum()}h")
-        v3.write(f"**100% :** {df_m['H_100'].sum()}h")
-        v4.write(f"**125% :** {df_m['H_125'].sum()}h")
+        v1.info(f"**50% :** {df_m['H_50'].sum()}h")
+        v2.info(f"**75% :** {df_m['H_75'].sum()}h")
+        v3.info(f"**100% :** {df_m['H_100'].sum()}h")
+        v4.info(f"**125% :** {df_m['H_125'].sum()}h")
 
         for s in sorted(df_m['Semaine'].unique()):
             df_s = df_m[df_m['Semaine'] == s].copy()
             with st.expander(f"Semaine {s} — Brut : {df_s['Gain'].sum():.2f} €"):
                 df_s['Jour'] = df_s['Date'].apply(lambda x: f"{JOURS_FR[x.weekday()]} {x.day}")
+                # Somme des repas par jour au cas où il y a plusieurs entrées le même jour
                 st.table(df_s[['Jour', 'H_50', 'H_75', 'H_100', 'H_125', 'Gain', 'Repas']].set_index('Jour'))
