@@ -8,30 +8,45 @@ from streamlit_gsheets import GSheetsConnection
 st.set_page_config(page_title="Mes Heures Sup", page_icon="⏱️")
 st.title("⏱️ Suivi des Heures")
 
-# --- CONNEXION BLINDÉE ---
-conn = None
-try:
-    s = dict(st.secrets["connections"]["gsheets"])
+# --- CONNEXION MANUELLE ---
+@st.cache_resource
+def get_connection():
+    s = st.secrets["connections"]["gsheets"]
     
-    # On décode la clé Base64 pour qu'elle soit parfaite en mémoire
+    # 1. Décodage de la clé (méthode Base64 pour éviter l'erreur PEM)
     try:
-        decoded_key = base64.b64decode(s["private_key"]).decode("utf-8")
+        raw_key = s["private_key"].strip()
+        decoded_key = base64.b64decode(raw_key).decode("utf-8")
     except:
-        # Au cas où tu n'as pas encore mis le base64
-        decoded_key = s["private_key"].replace("\\n", "\n").strip()
+        decoded_key = raw_key.replace("\\n", "\n")
 
-    # On crée les credentials sans le champ 'type' pour éviter l'autre erreur
-    creds = {k: v for k, v in s.items() if k not in ["type", "spreadsheet"]}
-    creds["private_key"] = decoded_key
+    # 2. On construit l'objet de credentials SANS 'type' ni 'spreadsheet'
+    # pour éviter l'erreur 'unexpected keyword argument'
+    credentials_dict = {
+        "project_id": s["project_id"],
+        "private_key_id": s["private_key_id"],
+        "private_key": decoded_key,
+        "client_email": s["client_email"],
+        "client_id": s["client_id"],
+        "auth_uri": s["auth_uri"],
+        "token_uri": s["token_uri"],
+        "auth_provider_x509_cert_url": s["auth_provider_x509_cert_url"],
+        "client_x509_cert_url": s["client_x509_cert_url"]
+    }
+    
+    # On crée la connexion de manière isolée
+    return st.connection("gsheets", type=GSheetsConnection, **credentials_dict)
 
-    conn = st.connection("gsheets", type=GSheetsConnection, **creds)
-    df_existant = conn.read(spreadsheet=s["spreadsheet"], ttl=0)
+try:
+    conn = get_connection()
+    url = st.secrets["connections"]["gsheets"]["spreadsheet"]
+    df_existant = conn.read(spreadsheet=url, ttl=0)
     if df_existant is not None:
         df_existant = df_existant.dropna(how="all")
     else:
         df_existant = pd.DataFrame(columns=["Date", "Heures", "Gain"])
 except Exception as e:
-    st.error(f"⚠️ Erreur : {e}")
+    st.error(f"⚠️ Erreur de connexion : {e}")
     df_existant = pd.DataFrame(columns=["Date", "Heures", "Gain"])
 
 # --- INTERFACE ---
@@ -46,19 +61,24 @@ with st.form("saisie"):
     d = col1.date_input("Date", datetime.now())
     h1 = col2.time_input("Début", time(18,0))
     h2 = col3.time_input("Fin", time(22,0))
+    
     if st.form_submit_button("Enregistrer"):
-        # Calcul simple pour valider
+        # Calcul de base
         start = datetime.combine(d, h1)
         end = datetime.combine(d, h2)
         if end <= start: end += timedelta(days=1)
         duree = (end - start).total_seconds() / 3600
-        gain = duree * taux_base * 1.5
+        gain = duree * taux_base * 1.5 # Estimation
         
         nouvelle_ligne = pd.DataFrame([{"Date": str(d), "Heures": float(duree), "Gain": float(gain)}])
         df_final = pd.concat([df_existant, nouvelle_ligne], ignore_index=True)
-        conn.update(spreadsheet=st.secrets["connections"]["gsheets"]["spreadsheet"], data=df_final)
-        st.success("C'est enregistré !")
-        st.rerun()
+        
+        try:
+            conn.update(spreadsheet=url, data=df_final)
+            st.success("C'est enregistré !")
+            st.rerun()
+        except Exception as e:
+            st.error(f"Erreur update : {e}")
 
 if not df_existant.empty:
     st.divider()
