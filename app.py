@@ -40,30 +40,36 @@ def calculer_gain_reel(date_j, debut, fin, t_base):
         current_time += timedelta(minutes=15)
     return (end - start).total_seconds() / 3600, round(gain_total, 2)
 
-# --- 5. CONNEXION (FORCÉE) ---
+# --- 5. CONNEXION (CORRECTIF FINAL) ---
 conn = None
 df_existant = pd.DataFrame(columns=["Date", "Heures", "Gain"])
 
 try:
     if "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
-        # On extrait les infos
+        # 1. On récupère les secrets dans un dictionnaire
         creds = dict(st.secrets["connections"]["gsheets"])
+        
+        # 2. On nettoie la clé privée
         if "private_key" in creds:
             creds["private_key"] = creds["private_key"].replace("\\n", "\n")
         
-        # On FORCE l'utilisation de GSheetsConnection explicitement pour éviter ton erreur
+        # 3. ON SUPPRIME LE MOT "type" pour éviter le conflit
+        if "type" in creds:
+            del creds["type"]
+        
+        # 4. On lance la connexion
         conn = st.connection("gsheets", type=GSheetsConnection, **creds)
         
         df_existant = conn.read(ttl=0)
         if df_existant is not None:
             df_existant = df_existant.dropna(how="all")
     else:
-        st.error("❌ Secrets 'connections.gsheets' non trouvés.")
+        st.error("❌ Secrets 'connections.gsheets' introuvables.")
 except Exception as e:
     st.error(f"⚠️ Erreur de connexion : {e}")
 
 # --- 6. ACTION D'ENREGISTREMENT ---
-if submit and conn:
+if submit and conn is not None:
     h_tot, g_tot = calculer_gain_reel(d, h1, h2, taux_base)
     nouvelle_ligne = pd.DataFrame([{"Date": d.strftime('%Y-%m-%d'), "Heures": float(h_tot), "Gain": float(g_tot)}])
     df_final = pd.concat([df_existant, nouvelle_ligne], ignore_index=True)
