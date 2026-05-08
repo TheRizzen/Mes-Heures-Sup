@@ -4,25 +4,24 @@ from datetime import datetime, time, timedelta
 import holidays
 from streamlit_gsheets import GSheetsConnection
 
+# --- 1. CONFIGURATION ---
 st.set_page_config(page_title="Mes Heures Sup", page_icon="⏱️")
 st.title("⏱️ Suivi des Heures")
 
-# --- CONNEXION ---
+# --- 2. CONNEXION ---
 @st.cache_resource
 def connect_gsheets():
     # On récupère le bloc des secrets
     s = dict(st.secrets["connections"]["gsheets"])
     
-    # 1. Nettoyage de la clé PEM
+    # Nettoyage de la clé PEM
     if "private_key" in s:
         s["private_key"] = s["private_key"].replace("\\n", "\n").strip()
     
-    # 2. LA SOLUTION : On supprime 'type' du dictionnaire 
-    # car il est déjà précisé dans l'argument suivant.
+    # On supprime 'type' pour éviter le conflit de paramètres
     if "type" in s:
         del s["type"]
     
-    # 3. On crée la connexion
     return st.connection("gsheets", type=GSheetsConnection, **s)
 
 try:
@@ -37,7 +36,7 @@ except Exception as e:
     st.error(f"⚠️ Erreur : {e}")
     df_existant = pd.DataFrame(columns=["Date", "Heures", "Gain"])
 
-# --- INTERFACE ---
+# --- 3. INTERFACE ---
 with st.sidebar:
     st.header("⚙️ Paramètres")
     t_base = st.number_input("Taux horaire base (€)", value=15.0)
@@ -53,14 +52,22 @@ with st.form("form_saisie", clear_on_submit=True):
     submit = st.form_submit_button("Enregistrer")
 
 if submit:
-    # Calcul simple
+    # Calcul de la durée
     start = datetime.combine(d, h1)
     end = datetime.combine(d, h2)
-    if end <= start: end += timedelta(days=1)
+    if end <= start: 
+        end += timedelta(days=1)
     h_tot = (end - start).total_seconds() / 3600
+    
+    # Calcul du gain (majoré à 50% par défaut pour le test)
     g_tot = round(h_tot * t_base * 1.5, 2)
     
-    nouvelle_ligne = pd.DataFrame([{"Date": d.strftime('%Y-%m-%d'), "Heures": float(h_tot), "Gain": float(g_tot)}])
+    nouvelle_ligne = pd.DataFrame([{
+        "Date": d.strftime('%Y-%m-%d'), 
+        "Heures": float(h_tot), 
+        "Gain": float(g_tot)
+    }])
+    
     df_final = pd.concat([df_existant, nouvelle_ligne], ignore_index=True)
     
     try:
@@ -70,6 +77,9 @@ if submit:
     except Exception as e:
         st.error(f"Erreur enregistrement : {e}")
 
+# --- 4. AFFICHAGE ---
 if not df_existant.empty:
     st.divider()
-    st.dataframe(df_existant.sort_values('Date', ascending=False), use_container_width=
+    # Tri par date et affichage (Parenthèses bien fermées ici)
+    df_tri = df_existant.sort_values('Date', ascending=False)
+    st.dataframe(df_tri, use_container_width=True, hide_index=True)
