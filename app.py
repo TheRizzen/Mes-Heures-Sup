@@ -2,86 +2,76 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, time, timedelta
 import holidays
+from streamlit_gsheets import GSheetsConnection
 
-# Configuration de la page
+# Configuration
 st.set_page_config(page_title="Mes Heures Sup", page_icon="⏱️")
+st.title("⏱️ Mon Suivi Permanent")
 
-st.title("⏱️ Calculateur d'Heures Sup")
+# --- CONNEXION GOOGLE SHEETS ---
+conn = st.connection("gsheets", type=GSheetsConnection)
+
+# Lecture des données existantes
+df_existant = conn.read(ttl=0) # ttl=0 pour forcer la mise à jour réelle
 
 # --- PARAMETRES ---
-with st.expander("⚙️ Configuration de mon contrat"):
+with st.sidebar:
     taux_base = st.number_input("Taux horaire de base (€)", value=12.0)
-    pays = st.selectbox("Pays (pour les jours fériés)", ["France", "Belgique", "Suisse"])
+    pays = st.selectbox("Pays", ["France", "Belgique", "Suisse"])
     feries = holidays.CountryHoliday(pays)
 
-# --- LOGIQUE DE CALCUL ---
+# --- LOGIQUE DE CALCUL (Inchangée) ---
 def calculer_tranches(date_choisie, h_deb, h_fin, t_base):
     debut = datetime.combine(date_choisie, h_deb)
     fin = datetime.combine(date_choisie, h_fin)
     if fin <= debut: fin += timedelta(days=1)
-    
     est_special = (date_choisie.weekday() == 6 or date_choisie in feries)
     total_gain = 0
     total_h = (fin - debut).total_seconds() / 3600
-    
     curr = debut
     while curr < fin:
         prochain = min(curr + timedelta(minutes=15), fin)
         duree = 0.25
         h = curr.hour
         est_nuit = (h >= 20 or h < 6)
-        
-        if not est_special:
-            taux = 2.0 if est_nuit else 1.50 
-        else:
-            taux = 2.25 if est_nuit else 1.75 
-            
+        taux = (2.25 if est_nuit else 1.75) if est_special else (2.0 if est_nuit else 1.50)
         total_gain += duree * (t_base * taux)
         curr = prochain
     return total_h, total_gain
 
-# --- SAISIE ---
-st.subheader("➕ Ajouter des heures")
-col1, col2, col3 = st.columns(3)
-with col1: d = st.date_input("Jour")
-with col2: h1 = st.time_input("Début", time(18, 0))
-with col3: h2 = st.time_input("Fin", time(21, 0))
+# --- INTERFACE DE SAISIE ---
+with st.form("form_saisie"):
+    col1, col2, col3 = st.columns(3)
+    d = col1.date_input("Jour")
+    h1 = col2.time_input("Début", time(18, 0))
+    h2 = col3.time_input("Fin", time(21, 0))
+    submit = st.form_submit_button("Enregistrer définitivement")
 
-if "data" not in st.session_state:
-    st.session_state.data = []
-
-if st.button("Enregistrer la session"):
+if submit:
     h_tot, gain_tot = calculer_tranches(d, h1, h2, taux_base)
-    st.session_state.data.append({
-        "Date": pd.to_datetime(d), 
-        "Heures": h_tot, 
+    
+    # Création de la nouvelle ligne
+    nouvelle_ligne = pd.DataFrame([{
+        "Date": d.strftime('%Y-%m-%d'),
+        "Heures": h_tot,
         "Gain": round(gain_tot, 2)
-    })
-    st.success(f"Ajouté : {h_tot}h pour {gain_tot:.2f}€")
-
-# --- AFFICHAGE (VERSION CORRIGÉE) ---
-if st.session_state.data:
-    df = pd.DataFrame(st.session_state.data)
+    }])
     
+    # Fusion avec l'ancien et envoi vers Google
+    df_final = pd.concat([df_existant, nouvelle_ligne], ignore_index=True)
+    conn.update(data=df_final)
+    st.success("Données sauvegardées dans Google Sheets !")
+    st.rerun()
+
+# --- AFFICHAGE ---
+if not df_existant.empty:
+    df_existant['Date'] = pd.to_datetime(df_existant['Date'])
     st.divider()
-    st.metric("Total à percevoir", f"{df['Gain'].sum():.2f} €")
+    st.metric("Total Cumulé", f"{df_existant['Gain'].sum():.2f} €")
     
-    choix = st.radio("Récapitulatif par :", ["Jour", "Mois", "Année"], horizontal=True)
-    
+    choix = st.radio("Récapitulatif :", ["Jour", "Mois"], horizontal=True)
     if choix == "Jour":
-        st.dataframe(df)
-    
-    elif choix == "Mois":
-        # Ici on utilise 'ME' au lieu de 'M' pour éviter ton erreur
-        recap_m = df.resample('ME', on='Date').sum()
-        recap_m.index = recap_m.index.strftime('%b %Y') # Joli nom de mois
+        st.dataframe(df_existant.sort_values('Date', ascending=False))
+    else:
+        recap_m = df_existant.resample('ME', on='Date').sum()
         st.bar_chart(recap_m['Gain'])
-        st.table(recap_m[['Heures', 'Gain']])
-
-    elif choix == "Année":
-        # Ici on utilise 'YE' au lieu de 'A' ou 'Y'
-        recap_a = df.resample('YE', on='Date').sum()
-        recap_a.index = recap_a.index.strftime('%Y')
-        st.table(recap_a[['Heures', 'Gain']])
-else:
-    st.info("👋 Aucune donnée. Saisis tes premières heures pour voir le récapitulatif !")
