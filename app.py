@@ -26,20 +26,22 @@ try:
     if df_raw is not None:
         df_raw = df_raw.dropna(how="all")
         df_raw['Date'] = pd.to_datetime(df_raw['Date'], dayfirst=True, errors='coerce')
-        # Si la colonne Taux_Base n'existe pas encore dans ton vieux fichier, on la crée
-        if 'Taux_Base' not in df_raw.columns:
-            df_raw['Taux_Base'] = 15.0 # Valeur par défaut pour l'ancien historique
+        # On s'assure que les colonnes existent
+        if 'Taux_Base' not in df_raw.columns: df_raw['Taux_Base'] = 15.0
+        if 'Repas' not in df_raw.columns: df_raw['Repas'] = "Non"
     else:
-        df_raw = pd.DataFrame(columns=["Date", "Heures", "Gain", "Taux_Base"])
+        df_raw = pd.DataFrame(columns=["Date", "Heures", "Gain", "Taux_Base", "Repas"])
 except Exception as e:
     st.error(f"⚠️ Erreur : {e}")
-    df_raw = pd.DataFrame(columns=["Date", "Heures", "Gain", "Taux_Base"])
+    df_raw = pd.DataFrame(columns=["Date", "Heures", "Gain", "Taux_Base", "Repas"])
 
 # --- 3. LOGIQUE DE CALCUL ---
-def calculer_gain(date_j, debut, fin, t_base, feries):
+def calculer_session(date_j, debut, fin, t_base, feries):
     start = datetime.combine(date_j, debut)
     end = datetime.combine(date_j, fin)
     if end <= start: end += timedelta(days=1)
+    
+    # 1. Calcul financier (Heures Sup)
     gain_total, current, pas = 0, start, 15
     while current < end:
         est_special = (current.weekday() == 6 or current.date() in feries)
@@ -48,12 +50,26 @@ def calculer_gain(date_j, debut, fin, t_base, feries):
         taux_mult = (2.25 if est_nuit else 1.75) if est_special else (2.00 if est_nuit else 1.50)
         gain_total += (pas / 60) * (t_base * taux_mult)
         current += timedelta(minutes=pas)
-    return round((end - start).total_seconds() / 3600, 2), round(gain_total, 2)
+    
+    # 2. Condition Repas (2h entre 19h et 21h)
+    repas_start = datetime.combine(date_j, time(19, 0))
+    repas_end = datetime.combine(date_j, time(21, 0))
+    
+    # Calcul de l'intersection entre le travail et la plage 19h-21h
+    inter_start = max(start, repas_start)
+    inter_end = min(end, repas_end)
+    
+    repas_valide = "Non"
+    if inter_end > inter_start:
+        duree_dans_plage = (inter_end - inter_start).total_seconds() / 3600
+        if duree_dans_plage >= 2.0: # Minimum 2 heures
+            repas_valide = "Oui"
+            
+    return round((end - start).total_seconds() / 3600, 2), round(gain_total, 2), repas_valide
 
 # --- 4. INTERFACE ---
 with st.sidebar:
     st.title("⏱️ Menu")
-    # Ce taux servira uniquement pour les PROCHAINES saisies
     taux_actuel = st.number_input("Taux horaire actuel (€)", value=15.0)
     pays = st.selectbox("Jours fériés", ["France", "Belgique", "Suisse"])
     feries_liste = holidays.CountryHoliday(pays)
@@ -61,27 +77,27 @@ with st.sidebar:
 
 # --- MODE : SAISIE ---
 if mode == "Saisie":
-    st.header("➕ Ajouter des Heures")
-    st.info(f"Le gain sera calculé avec votre taux actuel de {taux_actuel}€")
+    st.header("➕ Nouvelle Saisie")
     with st.form("f_saisie", clear_on_submit=True):
         col1, col2, col3 = st.columns(3)
         d = col1.date_input("Date", datetime.now())
         h1 = col2.time_input("Début", time(18, 0))
         h2 = col3.time_input("Fin", time(22, 0))
         if st.form_submit_button("Enregistrer"):
-            h_tot, g_tot = calculer_gain(d, h1, h2, taux_actuel, feries_liste)
-            # On enregistre le taux utilisé dans la ligne
+            h_tot, g_tot, repas = calculer_session(d, h1, h2, taux_actuel, feries_liste)
+            
             new_row = pd.DataFrame([{
                 "Date": d.strftime('%Y-%m-%d'), 
                 "Heures": h_tot, 
                 "Gain": g_tot,
-                "Taux_Base": taux_actuel
+                "Taux_Base": taux_actuel,
+                "Repas": repas
             }])
+            
             df_final = pd.concat([df_raw, new_row], ignore_index=True)
-            # Nettoyage format date avant envoi
             df_final['Date'] = pd.to_datetime(df_final['Date']).dt.strftime('%Y-%m-%d')
             conn.update(spreadsheet=url, data=df_final)
-            st.success(f"Validé ! Gain calculé à {taux_actuel}€/h")
+            st.success(f"Enregistré ! Repas validé : {repas}")
             st.rerun()
 
 # --- MODE : GESTION ---
@@ -90,17 +106,7 @@ elif mode == "Gestion":
     if not df_raw.empty:
         df_edit = df_raw.copy()
         df_edit['Date'] = pd.to_datetime(df_edit['Date'])
-        
-        edited = st.data_editor(
-            df_edit, 
-            num_rows="dynamic", 
-            use_container_width=True,
-            column_config={
-                "Date": st.column_config.DateColumn("Date", format="DD/MM/YYYY"),
-                "Taux_Base": st.column_config.NumberColumn("Taux utilisé", format="%.2f €")
-            }
-        )
-        
+        edited = st.data_editor(df_edit, num_rows="dynamic", use_container_width=True)
         if st.button("Sauvegarder les changements"):
             edited['Date'] = pd.to_datetime(edited['Date']).dt.strftime('%Y-%m-%d')
             conn.update(spreadsheet=url, data=edited)
@@ -109,7 +115,7 @@ elif mode == "Gestion":
 
 # --- MODE : RÉCAPITULATIF DÉTAILLÉ ---
 elif mode == "Récapitulatif Détaillé":
-    st.header("📊 Analyse des revenus")
+    st.header("📊 Analyse")
     if not df_raw.empty:
         df = df_raw.copy()
         df['Date'] = pd.to_datetime(df['Date'])
@@ -117,29 +123,25 @@ elif mode == "Récapitulatif Détaillé":
         df['Mois_Num'] = df['Date'].dt.month
         df['Semaine'] = df['Date'].dt.isocalendar().week
         
-        c1, c2 = st.columns(2)
-        with c1:
-            list_ans = sorted(df['Année'].unique(), reverse=True)
-            sel_an = st.selectbox("📅 Année", list_ans)
-            df_ans = df[df['Année'] == sel_an]
-        with c2:
-            list_mois_num = sorted(df_ans['Mois_Num'].unique())
-            list_mois_nom = [MOIS_FR[m] for m in list_mois_num]
-            sel_mois_nom = st.selectbox("🌙 Mois", list_mois_nom)
-            sel_m_num = [k for k, v in MOIS_FR.items() if v == sel_mois_nom][0]
-            df_m = df_ans[df_ans['Mois_Num'] == sel_m_num]
+        sel_an = st.selectbox("📅 Année", sorted(df['Année'].unique(), reverse=True))
+        df_ans = df[df['Année'] == sel_an]
+        
+        sel_mois_nom = st.selectbox("🌙 Mois", [MOIS_FR[m] for m in sorted(df_ans['Mois_Num'].unique())])
+        sel_m_num = [k for k, v in MOIS_FR.items() if v == sel_mois_nom][0]
+        df_m = df_ans[df_ans['Mois_Num'] == sel_m_num]
 
         st.divider()
-        col_m1, col_m2 = st.columns(2)
-        col_m1.metric(f"Total {sel_mois_nom}", f"{df_m['Gain'].sum():.2f} €")
-        col_m2.metric("Heures cumulées", f"{df_m['Heures'].sum():.2f} h")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Gain Heures Sup", f"{df_m['Gain'].sum():.2f} €")
+        c2.metric("Total Heures", f"{df_m['Heures'].sum():.2f} h")
+        # On compte le nombre de "Oui" pour les repas
+        nb_repas = len(df_m[df_m['Repas'] == "Oui"])
+        c3.metric("Nombre de Repas", f"{nb_repas}")
 
         st.subheader("📁 Détail par semaine")
-        sems = sorted(df_m['Semaine'].unique())
-        for s in sems:
+        for s in sorted(df_m['Semaine'].unique()):
             df_s = df_m[df_m['Semaine'] == s].copy()
-            total_s = df_s['Gain'].sum()
-            with st.expander(f"Semaine {s} — Total : {total_s:.2f} €"):
+            with st.expander(f"Semaine {s} — {df_s['Gain'].sum():.2f} €"):
                 df_s['Jour'] = df_s['Date'].apply(lambda x: f"{JOURS_FR[x.weekday()]} {x.day}")
-                # On affiche aussi le taux utilisé pour info
-                st.table(df_s[['Jour', 'Heures', 'Taux_Base', 'Gain']].set_index('Jour'))
+                st.table(df_s[['Jour', 'Heures', 'Gain', 'Repas']].set_index('Jour'))
+            
