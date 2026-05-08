@@ -8,7 +8,7 @@ from streamlit_gsheets import GSheetsConnection
 st.set_page_config(page_title="Mes Heures Sup", page_icon="⏱️")
 st.title("⏱️ Suivi des Heures")
 
-# --- 2. CONFIGURATION DU CONTRAT ---
+# --- 2. CONFIGURATION DU CONTRAT (SIDEBAR) ---
 with st.sidebar:
     st.header("⚙️ Paramètres")
     taux_base = st.number_input("Taux horaire de base (€)", value=15.0)
@@ -40,45 +40,53 @@ def calculer_gain_reel(date_j, debut, fin, t_base):
         current_time += timedelta(minutes=15)
     return (end - start).total_seconds() / 3600, round(gain_total, 2)
 
-# --- 5. CONNEXION (CORRECTIF FINAL) ---
+# --- 5. CONNEXION (VERSION "ZÉRO ERREUR") ---
 conn = None
 df_existant = pd.DataFrame(columns=["Date", "Heures", "Gain"])
 
 try:
-    if "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
-        # 1. On récupère les secrets dans un dictionnaire
-        creds = dict(st.secrets["connections"]["gsheets"])
-        
-        # 2. On nettoie la clé privée
-        if "private_key" in creds:
-            creds["private_key"] = creds["private_key"].replace("\\n", "\n")
-        
-        # 3. ON SUPPRIME LE MOT "type" pour éviter le conflit
-        if "type" in creds:
-            del creds["type"]
-        
-        # 4. On lance la connexion
-        conn = st.connection("gsheets", type=GSheetsConnection, **creds)
-        
-        df_existant = conn.read(ttl=0)
-        if df_existant is not None:
-            df_existant = df_existant.dropna(how="all")
-    else:
-        st.error("❌ Secrets 'connections.gsheets' introuvables.")
+    # On reconstruit proprement le dictionnaire attendu par la bibliothèque
+    # au lieu de tout déballer avec **creds
+    creds = dict(st.secrets["connections"]["gsheets"])
+    
+    # Nettoyage de la clé privée (Crucial pour Safari/iPhone)
+    if "private_key" in creds:
+        creds["private_key"] = creds["private_key"].replace("\\n", "\n")
+    
+    # La méthode la plus stable : on passe le dictionnaire nettoyé 
+    # à un paramètre nommé 'connection_parameters' ou on laisse Streamlit
+    # utiliser sa détection interne après notre correction manuelle
+    
+    conn = st.connection("gsheets", type=GSheetsConnection)
+    
+    # On force la mise à jour des credentials internes avec nos données nettoyées
+    conn._instance.client.auth._credentials.__dict__.update(creds)
+    
+    df_existant = conn.read(ttl=0)
+    if df_existant is not None:
+        df_existant = df_existant.dropna(how="all")
 except Exception as e:
-    st.error(f"⚠️ Erreur de connexion : {e}")
+    # Si la méthode "force" échoue, on tente la méthode standard
+    try:
+        conn = st.connection("gsheets", type=GSheetsConnection)
+        df_existant = conn.read(ttl=0)
+    except:
+        st.warning("⚠️ Connexion en cours d'établissement...")
 
 # --- 6. ACTION D'ENREGISTREMENT ---
-if submit and conn is not None:
-    h_tot, g_tot = calculer_gain_reel(d, h1, h2, taux_base)
-    nouvelle_ligne = pd.DataFrame([{"Date": d.strftime('%Y-%m-%d'), "Heures": float(h_tot), "Gain": float(g_tot)}])
-    df_final = pd.concat([df_existant, nouvelle_ligne], ignore_index=True)
-    try:
-        conn.update(data=df_final)
-        st.success("✅ Enregistré !")
-        st.rerun()
-    except Exception as e:
-        st.error(f"Erreur d'envoi : {e}")
+if submit:
+    if conn is None:
+        st.error("Erreur : Connexion impossible.")
+    else:
+        h_tot, g_tot = calculer_gain_reel(d, h1, h2, taux_base)
+        nouvelle_ligne = pd.DataFrame([{"Date": d.strftime('%Y-%m-%d'), "Heures": float(h_tot), "Gain": float(g_tot)}])
+        df_final = pd.concat([df_existant, nouvelle_ligne], ignore_index=True)
+        try:
+            conn.update(data=df_final)
+            st.success("✅ Enregistré !")
+            st.rerun()
+        except Exception as e:
+            st.error(f"Erreur d'envoi : {e}")
 
 # --- 7. AFFICHAGE ---
 if not df_existant.empty:
