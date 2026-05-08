@@ -4,53 +4,60 @@ from datetime import datetime, time, timedelta
 import holidays
 from streamlit_gsheets import GSheetsConnection
 
-# --- 1. CONFIGURATION & DESIGN ---
+# --- 1. CONFIGURATION & DESIGN TOTAL (Haute Lisibilité) ---
 st.set_page_config(page_title="Enedis Focus Pro", page_icon="⚡", layout="wide")
 
-# CSS pour une esthétique Totale (Haute Visibilité & Moderne)
+# CSS pour une esthétique Totale et lisible (Contraste Maximum)
 st.markdown("""
     <style>
-    /* Fond de l'application */
+    /* Fond global de l'application (Gris très clair pour détacher les cartes) */
     .stApp {
-        background-color: #F0F2F6;
+        background-color: #F8F9FA;
     }
     
-    /* Titres principaux */
+    /* Couleur de base du texte pour toute l'app (Noir profond pour lisibilité) */
+    p, label, span, p {
+        color: #1A1A1A !important;
+        font-family: 'Segoe UI', sans-serif;
+    }
+
+    /* Titres principaux (Bleu Enedis) */
     h1, h2, h3 {
         color: #005BB7 !important; /* Bleu Enedis */
         font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
         font-weight: 700 !important;
     }
 
-    /* Cartes blanches pour le contenu */
+    /* Cartes blanches pour le contenu (Cards) */
     div.stBlock {
         background-color: #FFFFFF;
         padding: 25px;
         border-radius: 15px;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        box-shadow: 0 4px 6px rgba(0,0,0,0.05);
         margin-bottom: 20px;
+        border: 1px solid #EAEAEA;
     }
 
-    /* Style des métriques (KPIs) */
+    /* Métriques (KPIs) : Texte Noir Fort */
     div[data-testid="stMetricValue"] {
-        font-size: 28px !important;
+        font-size: 32px !important;
         font-weight: 800 !important;
-        color: #1E1E1E !important;
+        color: #005BB7 !important; /* Chiffres en Bleu Enedis */
     }
     
     div[data-testid="stMetricLabel"] {
         font-size: 16px !important;
-        color: #555555 !important;
+        color: #333333 !important; /* Labels en Gris foncé */
         font-weight: 600 !important;
     }
 
-    /* Boutons personnalisés */
+    /* Boutons personnalisés (Bleu Enedis, texte blanc) */
     .stButton>button {
         width: 100%;
         border-radius: 12px;
         height: 3.5em;
         background-color: #005BB7;
-        color: white;
+        color: white !important;
         font-weight: bold;
         border: none;
         transition: 0.3s;
@@ -58,15 +65,36 @@ st.markdown("""
     
     .stButton>button:hover {
         background-color: #003F7D;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+        box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        color: white !important;
     }
 
-    /* Sidebar stylisée */
+    /* Sidebar stylisée (Texte blanc sur fond bleu Enedis) */
     section[data-testid="stSidebar"] {
         background-color: #005BB7;
-    }
-    section[data-testid="stSidebar"] h1, section[data-testid="stSidebar"] p, section[data-testid="stSidebar"] label {
         color: white !important;
+    }
+    section[data-testid="stSidebar"] p, 
+    section[data-testid="stSidebar"] label, 
+    section[data-testid="stSidebar"] h1,
+    section[data-testid="stSidebar"] h2,
+    section[data-testid="stSidebar"] span {
+        color: white !important;
+    }
+    section[data-testid="stSidebar"] .stMarkdown p {
+        color: white !important;
+    }
+    
+    /* Correction pour le champ Taux Horaire dans la sidebar */
+    section[data-testid="stSidebar"] input {
+        color: #1A1A1A !important;
+    }
+    
+    /* Style des expanders (Semaines) */
+    div[data-testid="stExpander"] {
+        background-color: white !important;
+        border: 1px solid #EAEAEA !important;
+        border-radius: 10px !important;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -126,15 +154,18 @@ def calculer_session(date_j, debut, fin, t_base, feries):
 
 # --- 3. INTERFACE ---
 with st.sidebar:
-    st.markdown("# ⚡ Enedis Focus")
+    # AJOUT DU LOGO ENEDIS (Texte blanc car sidebar bleu Enedis)
+    st.markdown("## ⚡ Enedis Focus Pro")
     st.write("---")
-    taux_horaire = st.number_input("Mon Taux Horaire (€)", value=TX_HORAIRE_DEFAUT, step=0.01)
+    taux_horaire = st.number_input("Taux Horaire de Référence (€)", value=TX_HORAIRE_DEFAUT, step=0.01)
     st.write("---")
-    menu = st.radio("NAVIGATION", ["📊 Dashboard Mensuel", "➕ Saisir Intervention", "📝 Historique / Modif"])
+    menu = st.radio("NAVIGATION", ["📊 Mon Tableau de Bord", "➕ Saisir une Intervention", "📝 Voir l'Historique"], label_visibility="collapsed")
+    st.write("---")
+    st.write("Calculateur d'Heures Supplémentaires IEG")
 
 # --- MODE DASHBOARD ---
-if menu == "📊 Dashboard Mensuel":
-    st.title("📊 Synthèse de vos gains")
+if "Dashboard" in menu:
+    st.title("📊 Votre Tableau de Bord")
     if not df_raw.empty:
         df = df_raw.copy()
         df['Mois'] = df['Date'].dt.month
@@ -142,38 +173,44 @@ if menu == "📊 Dashboard Mensuel":
         sel_m_num = [k for k, v in MOIS_FR.items() if v == sel_m_nom][0]
         df_m = df[df['Mois'] == sel_m_num]
 
-        # Container des KPIs
+        # Container des KPIs (Texte noir sur fond blanc garanti)
         with st.container():
             st.markdown('<div class="stBlock">', unsafe_allow_html=True)
+            st.markdown("### Synthèse du mois")
             k1, k2, k3, k4 = st.columns(4)
             brut = df_m['Gain'].sum()
-            k1.metric("BRUT HS", f"{brut:.2f} €")
-            k2.metric("NET HS (estim.)", f"{brut * (1 - TX_RETENUE_HS):.2f} €", delta_color="normal")
-            k3.metric("HEURES SUP", f"{df_m['Heures'].sum():.2f} h")
-            k4.metric("REPAS", f"{int(df_m['Repas'].sum())}")
+            # Métriques affichées en Bleu Enedis pour la valeur
+            k1.metric("GAINS BRUTS", f"{brut:.2f} €")
+            k2.metric("GAINS NETS (estim.)", f"{brut * (1 - TX_RETENUE_HS):.2f} €")
+            k3.metric("HEURES SUPPLÉMENTAIRES", f"{df_m['Heures'].sum():.2f} h")
+            k4.metric("REPAS REPAS", f"{int(df_m['Repas'].sum())}")
             st.markdown('</div>', unsafe_allow_html=True)
 
-        st.write("### 📅 Détail des semaines")
+        st.write("### 📅 Détail jour par jour")
         df_m['Semaine'] = df_m['Date'].dt.isocalendar().week
         for s in sorted(df_m['Semaine'].unique(), reverse=True):
             df_s = df_m[df_m['Semaine'] == s].copy()
             b_s = df_s['Gain'].sum()
-            with st.expander(f"SEMAINE {s} • Total Brut : {b_s:.2f} €"):
+            with st.expander(f"SEMAINE {s} • Gains Bruts de la période : {b_s:.2f} €"):
                 df_s['Jour'] = df_s['Date'].apply(lambda x: f"{JOURS_FR[x.weekday()]} {x.day}")
+                # Affichage des tableaux en texte noir
                 st.dataframe(df_s[['Jour', 'H_50', 'H_75', 'H_100', 'H_125', 'Gain', 'Repas']].set_index('Jour'), use_container_width=True)
 
 # --- MODE SAISIE ---
-elif menu == "➕ Saisir Intervention":
+elif "Saisir" in menu:
     st.title("➕ Enregistrer des heures")
     with st.container():
         st.markdown('<div class="stBlock">', unsafe_allow_html=True)
+        st.markdown("### Nouvelle Intervention")
+        st.write("Entrez vos horaires de début et de fin. L'application calcule automatiquement les majorations Enedis (nuit, dimanche, fériés).")
         with st.form("form_saisie", clear_on_submit=True):
             col_d, col_h1, col_h2 = st.columns(3)
             date_s = col_d.date_input("Date de l'intervention", datetime.now())
             h_deb = col_h1.time_input("Heure de début", time(10, 0))
             h_fin = col_h2.time_input("Heure de fin", time(14, 0))
             
-            submit = st.form_submit_button("VALIDER ET ENREGISTRER")
+            # Bouton de validation large
+            submit = st.form_submit_button("AJOUTER AU COMPTEUR")
             
             if submit:
                 h_t, g_t, r_t, v_t = calculer_session(date_s, h_deb, h_fin, taux_horaire, holidays.CountryHoliday("France"))
@@ -181,22 +218,22 @@ elif menu == "➕ Saisir Intervention":
                 df_to_save = pd.concat([df_raw, new_data], ignore_index=True)
                 df_to_save['Date'] = df_to_save['Date'].dt.strftime('%d/%m/%Y')
                 conn.update(spreadsheet=url, data=df_to_save)
-                st.balloons()
-                st.success(f"Bravo ! +{g_t}€ bruts ajoutés à votre compteur.")
+                st.success(f"Bravo ! Votre compteur de gains bruts a augmenté de {g_t} €.")
         st.markdown('</div>', unsafe_allow_html=True)
 
 # --- MODE HISTORIQUE ---
-elif menu == "📝 Historique / Modif":
-    st.title("📝 Gestion de l'historique")
-    st.info("Vous pouvez modifier les valeurs directement dans le tableau ci-dessous et cliquer sur Sauvegarder.")
+elif "Voir l'Historique" in menu:
+    st.title("📝 Gestion de vos données")
+    st.info("Vous pouvez modifier une erreur directement dans le tableau ci-dessous et cliquer sur 'Sauvegarder'.")
     with st.container():
         st.markdown('<div class="stBlock">', unsafe_allow_html=True)
         if not df_raw.empty:
             df_edit = df_raw.copy().sort_values("Date", ascending=False)
             edited_df = st.data_editor(df_edit, num_rows="dynamic", use_container_width=True, column_config={"Date": st.column_config.DateColumn("Date", format="DD/MM/YYYY")})
+            
             if st.button("SAUVEGARDER LES MODIFICATIONS"):
                 edited_df['Date'] = pd.to_datetime(edited_df['Date']).dt.strftime('%d/%m/%Y')
                 conn.update(spreadsheet=url, data=edited_df)
-                st.success("Base de données mise à jour !")
+                st.success("Base de données synchronisée !")
                 st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)
