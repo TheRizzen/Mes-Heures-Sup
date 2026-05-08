@@ -8,14 +8,26 @@ from streamlit_gsheets import GSheetsConnection
 st.set_page_config(page_title="Mes Heures Sup", page_icon="⏱️", layout="centered")
 st.title("⏱️ Suivi des Heures")
 
-# --- 2. CONFIGURATION DU CONTRAT (SIDEBAR) ---
+# --- 2. RÉPARATION DE LA CLÉ (CRUCIAL) ---
+# Ce bloc nettoie les caractères invisibles qui causent l'erreur PEM
+if "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
+    # On récupère la clé telle qu'elle est dans le secret
+    original_key = st.secrets["connections"]["gsheets"]["private_key"]
+    
+    # Nettoyage : on enlève les espaces de début/fin et on s'assure que les \n sont réels
+    cleaned_key = original_key.strip().replace("\\n", "\n")
+    
+    # On remplace temporairement dans la session Streamlit pour que la connexion lise la clé propre
+    st.secrets["connections"]["gsheets"]["private_key"] = cleaned_key
+
+# --- 3. CONFIGURATION DU CONTRAT (SIDEBAR) ---
 with st.sidebar:
     st.header("⚙️ Paramètres")
     taux_base = st.number_input("Taux horaire de base (€)", value=15.0)
     pays = st.selectbox("Pays", ["France", "Belgique", "Suisse"])
     feries = holidays.CountryHoliday(pays)
 
-# --- 3. INTERFACE DE SAISIE ---
+# --- 4. INTERFACE DE SAISIE ---
 with st.form("form_saisie", clear_on_submit=True):
     st.subheader("➕ Ajouter une session")
     col1, col2, col3 = st.columns(3)
@@ -24,7 +36,7 @@ with st.form("form_saisie", clear_on_submit=True):
     h2 = col3.time_input("Fin", time(22, 0))
     submit = st.form_submit_button("Enregistrer sur Google Sheets")
 
-# --- 4. LOGIQUE DE CALCUL ---
+# --- 5. LOGIQUE DE CALCUL ---
 def calculer_gain_reel(date_j, debut, fin, t_base):
     start = datetime.combine(date_j, debut)
     end = datetime.combine(date_j, fin)
@@ -37,7 +49,6 @@ def calculer_gain_reel(date_j, debut, fin, t_base):
     while current_time < end:
         h = current_time.hour
         est_nuit = (h >= 20 or h < 6)
-        # Majorations selon tes règles
         if not est_special:
             taux = 2.0 if est_nuit else 1.50
         else:
@@ -48,9 +59,7 @@ def calculer_gain_reel(date_j, debut, fin, t_base):
     duree = (end - start).total_seconds() / 3600
     return duree, round(gain_total, 2)
 
-# --- 5. CONNEXION ---
-# On utilise la méthode standard : Streamlit lira automatiquement 
-# la section [connections.gsheets] de tes secrets.
+# --- 6. CONNEXION ---
 try:
     conn = st.connection("gsheets", type=GSheetsConnection)
     df_existant = conn.read(ttl=0)
@@ -62,7 +71,7 @@ except Exception as e:
     st.error(f"Erreur de connexion au Sheets : {e}")
     df_existant = pd.DataFrame(columns=["Date", "Heures", "Gain"])
 
-# --- 6. ACTION D'ENREGISTREMENT ---
+# --- 7. ACTION D'ENREGISTREMENT ---
 if submit:
     h_tot, g_tot = calculer_gain_reel(d, h1, h2, taux_base)
     nouvelle_ligne = pd.DataFrame([{
@@ -81,7 +90,7 @@ if submit:
     except Exception as e:
         st.error(f"Erreur lors de l'enregistrement : {e}")
 
-# --- 7. AFFICHAGE DES RÉSULTATS ---
+# --- 8. AFFICHAGE DES RÉSULTATS ---
 if not df_existant.empty:
     df_existant['Date'] = pd.to_datetime(df_existant['Date'])
     st.divider()
