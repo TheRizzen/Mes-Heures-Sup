@@ -8,7 +8,7 @@ from streamlit_gsheets import GSheetsConnection
 st.set_page_config(page_title="Mes Heures Sup", page_icon="⏱️", layout="centered")
 st.title("⏱️ Suivi des Heures")
 
-# --- 2. LOGIQUE DE CALCUL DES MAJORATIONS ---
+# --- 2. LOGIQUE DE CALCUL ---
 def calculer_gain_reel(date_j, debut, fin, t_base, feries):
     start = datetime.combine(date_j, debut)
     end = datetime.combine(date_j, fin)
@@ -31,23 +31,27 @@ def calculer_gain_reel(date_j, debut, fin, t_base, feries):
     duree = (end - start).total_seconds() / 3600
     return duree, round(gain_total, 2)
 
-# --- 3. PRÉPARATION DES CREDENTIALS ---
+# --- 3. CONNEXION (SANS CONFLIT DE TYPE) ---
 conn = None
 df_existant = pd.DataFrame(columns=["Date", "Heures", "Gain"])
 
 try:
-    # On crée une COPIE modifiable des secrets pour ne pas toucher à st.secrets
+    # Création d'une copie modifiable
     conf = dict(st.secrets["connections"]["gsheets"])
     
-    # NETTOYAGE RADICAL de la clé privée pour éviter l'erreur PEM
+    # 1. Nettoyage de la clé
     if "private_key" in conf:
-        # On enlève les espaces, les guillemets résiduels et on gère les sauts de ligne
         conf["private_key"] = conf["private_key"].strip().replace("\\n", "\n")
     
-    # On crée la connexion en passant directement notre dictionnaire nettoyé
+    # 2. SUPPRESSION DU DOUBLON 'type' 
+    # (On l'enlève du dictionnaire car on le précise déjà dans st.connection)
+    if "type" in conf:
+        del conf["type"]
+    
+    # 3. Lancement de la connexion
     conn = st.connection("gsheets", type=GSheetsConnection, **conf)
     
-    # Lecture des données
+    # Lecture
     df_existant = conn.read(ttl=0)
     if df_existant is not None:
         df_existant = df_existant.dropna(how="all")
