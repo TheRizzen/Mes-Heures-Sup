@@ -26,40 +26,18 @@ def calculer_gain_reel(date_j, debut, fin, t_base, feries):
         current_time += timedelta(minutes=15)
     return (end - start).total_seconds() / 3600, round(gain_total, 2)
 
-# --- 3. CONNEXION (SOLUTION AU CONFLIT 'TYPE') ---
-conn = None
-df_existant = pd.DataFrame(columns=["Date", "Heures", "Gain"])
-
+# --- 3. CONNEXION ---
+# On ne passe RIEN en argument. Streamlit va lire [connections.gsheets] tout seul.
 try:
-    # On crée une copie modifiable des secrets
-    s = dict(st.secrets["connections"]["gsheets"])
-    
-    # Nettoyage de la clé privée
-    private_key = s["private_key"].replace("\\n", "\n").strip()
-    
-    # On prépare un dictionnaire de credentials SANS la clé 'type'
-    # pour éviter le message "multiple values for keyword argument 'type'"
-    creds_pour_connexion = {
-        "project_id": s["project_id"],
-        "private_key_id": s["private_key_id"],
-        "private_key": private_key,
-        "client_email": s["client_email"],
-        "client_id": s["client_id"],
-        "auth_uri": s["auth_uri"],
-        "token_uri": s["token_uri"],
-        "auth_provider_x509_cert_url": s["auth_provider_x509_cert_url"],
-        "client_x509_cert_url": s["client_x509_cert_url"]
-    }
-    
-    # On initialise la connexion
-    conn = st.connection("gsheets", type=GSheetsConnection, **creds_pour_connexion)
-    
-    # Lecture
-    df_existant = conn.read(spreadsheet=s["spreadsheet"], ttl=0)
+    conn = st.connection("gsheets", type=GSheetsConnection)
+    df_existant = conn.read(ttl=0)
     if df_existant is not None:
         df_existant = df_existant.dropna(how="all")
+    else:
+        df_existant = pd.DataFrame(columns=["Date", "Heures", "Gain"])
 except Exception as e:
-    st.error(f"⚠️ Erreur de configuration : {e}")
+    st.error(f"⚠️ Erreur de connexion : {e}")
+    df_existant = pd.DataFrame(columns=["Date", "Heures", "Gain"])
 
 # --- 4. INTERFACE ---
 with st.sidebar:
@@ -76,13 +54,13 @@ with st.form("form_saisie", clear_on_submit=True):
     h2 = col3.time_input("Fin", time(22, 0))
     submit = st.form_submit_button("Enregistrer")
 
-if submit and conn:
+if submit:
     h_tot, g_tot = calculer_gain_reel(d, h1, h2, taux_base, feries)
     nouvelle_ligne = pd.DataFrame([{"Date": d.strftime('%Y-%m-%d'), "Heures": float(h_tot), "Gain": float(g_tot)}])
     df_final = pd.concat([df_existant, nouvelle_ligne], ignore_index=True)
     
     try:
-        conn.update(spreadsheet=st.secrets["connections"]["gsheets"]["spreadsheet"], data=df_final)
+        conn.update(data=df_final)
         st.success("✅ Enregistré !")
         st.rerun()
     except Exception as e:
