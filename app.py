@@ -7,9 +7,9 @@ from streamlit_gsheets import GSheetsConnection
 # --- 1. CONFIGURATION ---
 st.set_page_config(page_title="Suivi Heures Sup Enedis", page_icon="⏱️", layout="wide")
 
-# Paramètres issus de ta fiche de paie d'avril 2026 [cite: 28, 61, 72]
-TX_HORAIRE_DEFAUT = 14.18  # [cite: 28, 61]
-TX_RETENUE_HS = 0.067      # Calculé selon CSG/CRDS et exonérations [cite: 63, 67]
+# Paramètres extraits de ton bulletin de paie [cite: 28, 63, 67]
+TX_HORAIRE_DEFAUT = 14.18  # Taux horaire de base [cite: 28]
+TX_RETENUE_HS = 0.067      # Retenue réelle de 6.7% sur les HS défiscalisées [cite: 63, 67]
 
 MOIS_FR = {
     1: "Janvier", 2: "Février", 3: "Mars", 4: "Avril", 5: "Mai", 6: "Juin",
@@ -18,10 +18,13 @@ MOIS_FR = {
 JOURS_FR = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"]
 
 def nettoyer_dataframe(df):
+    """Force la conversion des dates et des types pour éviter les erreurs de format"""
     if 'Date' in df.columns:
         df['Date'] = df['Date'].astype(str)
         df['Date'] = pd.to_datetime(df['Date'], dayfirst=True, errors='coerce')
         df = df.dropna(subset=['Date'])
+    if 'Repas' in df.columns:
+        df['Repas'] = pd.to_numeric(df['Repas'], errors='coerce').fillna(0)
     return df
 
 # --- 2. CONNEXION ---
@@ -37,17 +40,15 @@ try:
     if df_raw is not None:
         df_raw = df_raw.dropna(how="all")
         df_raw = nettoyer_dataframe(df_raw)
-        # On s'assure que 'Repas' est traité comme un nombre
-        if 'Repas' in df_raw.columns:
-            df_raw['Repas'] = pd.to_numeric(df_raw['Repas'], errors='coerce').fillna(0)
-            
+        
+        # Initialisation des colonnes si vide
         for c in ['H_50', 'H_75', 'H_100', 'H_125', 'Taux_Base', 'Repas']:
             if c not in df_raw.columns: 
                 df_raw[c] = 0.0 if c != 'Taux_Base' else TX_HORAIRE_DEFAUT
     else:
         df_raw = pd.DataFrame(columns=["Date", "Heures", "Gain", "Taux_Base", "Repas", "H_50", "H_75", "H_100", "H_125"])
 except Exception as e:
-    st.error(f"⚠️ Erreur de connexion : {e}")
+    st.error(f"⚠️ Erreur de connexion au Sheets : {e}")
     df_raw = pd.DataFrame(columns=["Date", "Heures", "Gain", "Taux_Base", "Repas", "H_50", "H_75", "H_100", "H_125"])
 
 # --- 3. LOGIQUE DE CALCUL ---
@@ -64,6 +65,7 @@ def calculer_session(date_j, debut, fin, t_base, feries):
         h = current.hour
         est_nuit = (h >= 20 or h < 6)
         
+        # Majorations Statutaires
         if est_special:
             mult = 2.25 if est_nuit else 1.75
             maj = 125 if est_nuit else 75
@@ -75,7 +77,7 @@ def calculer_session(date_j, debut, fin, t_base, feries):
         gain_total += (pas / 60) * (t_base * mult)
         current += timedelta(minutes=pas)
     
-    # --- LOGIQUE REPAS CUMULABLE ---
+    # Logique Repas Cumulable (Midi 11-13h et Soir 19-21h)
     def verifier_plage(p_start_time, p_end_time):
         p_start = datetime.combine(date_j, p_start_time)
         p_end = datetime.combine(date_j, p_end_time)
@@ -85,10 +87,8 @@ def calculer_session(date_j, debut, fin, t_base, feries):
         return 0
 
     nb_repas = 0
-    if verifier_plage(time(11, 0), time(13, 0)) >= 2.0:
-        nb_repas += 1
-    if verifier_plage(time(19, 0), time(21, 0)) >= 2.0:
-        nb_repas += 1
+    if verifier_plage(time(11, 0), time(13, 0)) >= 2.0: nb_repas += 1
+    if verifier_plage(time(19, 0), time(21, 0)) >= 2.0: nb_repas += 1
             
     return round((end - start).total_seconds()/3600, 2), round(gain_total, 2), nb_repas, ventilation
 
@@ -103,7 +103,6 @@ with st.sidebar:
 # --- MODE : SAISIE ---
 if mode == "Saisie":
     st.header("➕ Enregistrer une intervention")
-    st.info("💡 Si vous travaillez en deux fois (ex: matin et soir), enregistrez deux saisies distinctes sur la même date.")
     with st.form("f_saisie", clear_on_submit=True):
         col1, col2, col3 = st.columns(3)
         d = col1.date_input("Date", datetime.now())
@@ -122,7 +121,7 @@ if mode == "Saisie":
             df_export['Date'] = df_export['Date'].dt.strftime('%d/%m/%Y')
             df_final = pd.concat([df_export, new_row], ignore_index=True)
             conn.update(spreadsheet=url, data=df_final)
-            st.success(f"Enregistré ! Repas validé pour cette session : {repas_count}")
+            st.success(f"Enregistré ! Gain Brut : {g_tot}€ | Repas : {repas_count}")
             st.rerun()
 
 # --- MODE : GESTION ---
@@ -155,6 +154,7 @@ elif mode == "Récapitulatif":
         sel_m_num = [k for k, v in MOIS_FR.items() if v == sel_m_nom][0]
         df_m = df_ans[df_ans['Mois_Num'] == sel_m_num]
 
+        # Calculs totaux
         brut_total = df_m['Gain'].sum()
         net_estime = brut_total * (1 - TX_RETENUE_HS)
 
@@ -166,7 +166,7 @@ elif mode == "Récapitulatif":
         m4.metric("Total Repas", f"{int(df_m['Repas'].sum())}")
         
         st.divider()
-        st.write("**Détail des heures par majoration :**")
+        st.write("**Répartition des heures par majoration :**")
         v1, v2, v3, v4 = st.columns(4)
         v1.info(f"**50% :** {df_m['H_50'].sum()}h")
         v2.info(f"**75% :** {df_m['H_75'].sum()}h")
@@ -175,7 +175,11 @@ elif mode == "Récapitulatif":
 
         for s in sorted(df_m['Semaine'].unique()):
             df_s = df_m[df_m['Semaine'] == s].copy()
-            with st.expander(f"Semaine {s} — Brut : {df_s['Gain'].sum():.2f} €"):
+            brut_sem = df_s['Gain'].sum()
+            net_sem = brut_sem * (1 - TX_RETENUE_HS)
+            
+            titre = f"Semaine {s} — Brut : {brut_sem:.2f} € | Net Est. : {net_sem:.2f} €"
+            
+            with st.expander(titre):
                 df_s['Jour'] = df_s['Date'].apply(lambda x: f"{JOURS_FR[x.weekday()]} {x.day}")
-                # Somme des repas par jour au cas où il y a plusieurs entrées le même jour
                 st.table(df_s[['Jour', 'H_50', 'H_75', 'H_100', 'H_125', 'Gain', 'Repas']].set_index('Jour'))
