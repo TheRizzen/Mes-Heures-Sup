@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, time, timedelta
 import holidays
-import json
 from streamlit_gsheets import GSheetsConnection
 
 st.set_page_config(page_title="Mes Heures Sup", page_icon="⏱️")
@@ -11,12 +10,19 @@ st.title("⏱️ Suivi des Heures")
 # --- CONNEXION ---
 @st.cache_resource
 def connect_gsheets():
-    # On récupère tout le bloc des secrets
+    # On récupère le bloc des secrets
     s = dict(st.secrets["connections"]["gsheets"])
-    # On nettoie la clé (indispensable)
-    s["private_key"] = s["private_key"].replace("\\n", "\n").strip()
     
-    # On crée la connexion en passant le dictionnaire directement
+    # 1. Nettoyage de la clé PEM
+    if "private_key" in s:
+        s["private_key"] = s["private_key"].replace("\\n", "\n").strip()
+    
+    # 2. LA SOLUTION : On supprime 'type' du dictionnaire 
+    # car il est déjà précisé dans l'argument suivant.
+    if "type" in s:
+        del s["type"]
+    
+    # 3. On crée la connexion
     return st.connection("gsheets", type=GSheetsConnection, **s)
 
 try:
@@ -52,8 +58,6 @@ if submit:
     end = datetime.combine(d, h2)
     if end <= start: end += timedelta(days=1)
     h_tot = (end - start).total_seconds() / 3600
-    
-    # Majorations (Règle standard pour le test)
     g_tot = round(h_tot * t_base * 1.5, 2)
     
     nouvelle_ligne = pd.DataFrame([{"Date": d.strftime('%Y-%m-%d'), "Heures": float(h_tot), "Gain": float(g_tot)}])
@@ -68,4 +72,4 @@ if submit:
 
 if not df_existant.empty:
     st.divider()
-    st.dataframe(df_existant.sort_values('Date', ascending=False), use_container_width=True, hide_index=True)
+    st.dataframe(df_existant.sort_values('Date', ascending=False), use_container_width=
