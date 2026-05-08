@@ -3,42 +3,24 @@ import pandas as pd
 from datetime import datetime, time, timedelta
 import holidays
 import json
-import os
 from streamlit_gsheets import GSheetsConnection
 
 st.set_page_config(page_title="Mes Heures Sup", page_icon="⏱️")
 st.title("⏱️ Suivi des Heures")
 
-# --- CONNEXION VIA FICHIER TEMPORAIRE ---
+# --- CONNEXION ---
 @st.cache_resource
-def initialiser_connexion():
-    # 1. On récupère les secrets
-    s = st.secrets["connections"]["gsheets"]
+def connect_gsheets():
+    # On récupère tout le bloc des secrets
+    s = dict(st.secrets["connections"]["gsheets"])
+    # On nettoie la clé (indispensable)
+    s["private_key"] = s["private_key"].replace("\\n", "\n").strip()
     
-    # 2. On crée un dictionnaire propre au format Google
-    # On nettoie la clé au passage
-    google_dict = {
-        "type": "service_account",
-        "project_id": s["project_id"],
-        "private_key_id": s["private_key_id"],
-        "private_key": s["private_key"].replace("\\n", "\n").strip(),
-        "client_email": s["client_email"],
-        "client_id": s["client_id"],
-        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-        "token_uri": "https://oauth2.googleapis.com/token",
-        "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-        "client_x509_cert_url": s["client_x509_cert_url"]
-    }
-    
-    # 3. On écrit ce dictionnaire dans un fichier temporaire
-    with open("google_creds.json", "w") as f:
-        json.dump(google_dict, f)
-    
-    # 4. On connecte Streamlit en pointant vers ce fichier
-    return st.connection("gsheets", type=GSheetsConnection, credentials="google_creds.json")
+    # On crée la connexion en passant le dictionnaire directement
+    return st.connection("gsheets", type=GSheetsConnection, **s)
 
 try:
-    conn = initialiser_connexion()
+    conn = connect_gsheets()
     url = st.secrets["connections"]["gsheets"]["spreadsheet"]
     df_existant = conn.read(spreadsheet=url, ttl=0)
     if df_existant is not None:
@@ -46,32 +28,43 @@ try:
     else:
         df_existant = pd.DataFrame(columns=["Date", "Heures", "Gain"])
 except Exception as e:
-    st.error(f"⚠️ Erreur de connexion : {e}")
+    st.error(f"⚠️ Erreur : {e}")
     df_existant = pd.DataFrame(columns=["Date", "Heures", "Gain"])
 
-# --- INTERFACE ET LOGIQUE ---
-# (Le reste du code reste identique pour la saisie et les calculs)
+# --- INTERFACE ---
 with st.sidebar:
     st.header("⚙️ Paramètres")
-    t_base = st.number_input("Taux horaire", value=15.0)
-    feries = holidays.CountryHoliday(st.selectbox("Pays", ["France", "Belgique", "Suisse"]))
+    t_base = st.number_input("Taux horaire base (€)", value=15.0)
+    pays = st.selectbox("Pays", ["France", "Belgique", "Suisse"])
+    feries = holidays.CountryHoliday(pays)
 
-with st.form("saisie"):
+with st.form("form_saisie", clear_on_submit=True):
+    st.subheader("➕ Ajouter une session")
     col1, col2, col3 = st.columns(3)
     d = col1.date_input("Date", datetime.now())
-    h1 = col2.time_input("Début", time(18,0))
-    h2 = col3.time_input("Fin", time(22,0))
-    if st.form_submit_button("Enregistrer"):
-        # Calcul rapide
-        diff = datetime.combine(d, h2) - datetime.combine(d, h1)
-        h_tot = diff.total_seconds() / 3600
-        if h_tot < 0: h_tot += 24
-        
-        nouvelle_ligne = pd.DataFrame([{"Date": str(d), "Heures": h_tot, "Gain": h_tot * t_base * 1.5}])
-        df_final = pd.concat([df_existant, nouvelle_ligne], ignore_index=True)
+    h1 = col2.time_input("Début", time(18, 0))
+    h2 = col3.time_input("Fin", time(22, 0))
+    submit = st.form_submit_button("Enregistrer")
+
+if submit:
+    # Calcul simple
+    start = datetime.combine(d, h1)
+    end = datetime.combine(d, h2)
+    if end <= start: end += timedelta(days=1)
+    h_tot = (end - start).total_seconds() / 3600
+    
+    # Majorations (Règle standard pour le test)
+    g_tot = round(h_tot * t_base * 1.5, 2)
+    
+    nouvelle_ligne = pd.DataFrame([{"Date": d.strftime('%Y-%m-%d'), "Heures": float(h_tot), "Gain": float(g_tot)}])
+    df_final = pd.concat([df_existant, nouvelle_ligne], ignore_index=True)
+    
+    try:
         conn.update(spreadsheet=url, data=df_final)
-        st.success("Enregistré !")
+        st.success(f"✅ Enregistré : {h_tot}h")
         st.rerun()
+    except Exception as e:
+        st.error(f"Erreur enregistrement : {e}")
 
 if not df_existant.empty:
     st.divider()
