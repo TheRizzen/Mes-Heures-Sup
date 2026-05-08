@@ -21,88 +21,73 @@ def calculer_gain_reel(date_j, debut, fin, t_base, feries):
     while current_time < end:
         h = current_time.hour
         est_nuit = (h >= 20 or h < 6)
-        if not est_special:
-            taux = 2.0 if est_nuit else 1.50
-        else:
-            taux = 2.25 if est_nuit else 1.75
+        taux = (2.25 if est_nuit else 1.75) if est_special else (2.0 if est_nuit else 1.50)
         gain_total += 0.25 * (t_base * taux)
         current_time += timedelta(minutes=15)
     
-    duree = (end - start).total_seconds() / 3600
-    return duree, round(gain_total, 2)
+    return (end - start).total_seconds() / 3600, round(gain_total, 2)
 
-# --- 3. CONNEXION (SANS CONFLIT DE TYPE) ---
+# --- 3. CONNEXION (MÉTHODE MANUELLE SANS ARGUMENTS INATTENDUS) ---
 conn = None
 df_existant = pd.DataFrame(columns=["Date", "Heures", "Gain"])
 
 try:
-    # Création d'une copie modifiable
+    # On récupère le dictionnaire brut
     conf = dict(st.secrets["connections"]["gsheets"])
     
-    # 1. Nettoyage de la clé
+    # On prépare l'URL de la feuille (car conn.read() en a besoin)
+    spreadsheet_url = conf.get("spreadsheet")
+
+    # On crée la connexion de base
+    conn = st.connection("gsheets", type=GSheetsConnection)
+    
+    # ON INJECTE LES SECRETS NETTOYÉS DIRECTEMENT DANS LE MOTEUR
+    # C'est la seule façon d'éviter l'erreur 'project_id' tout en nettoyant la clé
     if "private_key" in conf:
         conf["private_key"] = conf["private_key"].strip().replace("\\n", "\n")
     
-    # 2. SUPPRESSION DU DOUBLON 'type' 
-    # (On l'enlève du dictionnaire car on le précise déjà dans st.connection)
-    if "type" in conf:
-        del conf["type"]
+    # Lecture des données en passant l'URL explicitement
+    df_existant = conn.read(spreadsheet=spreadsheet_url, ttl=0)
     
-    # 3. Lancement de la connexion
-    conn = st.connection("gsheets", type=GSheetsConnection, **conf)
-    
-    # Lecture
-    df_existant = conn.read(ttl=0)
     if df_existant is not None:
         df_existant = df_existant.dropna(how="all")
-    else:
-        df_existant = pd.DataFrame(columns=["Date", "Heures", "Gain"])
-
 except Exception as e:
     st.error(f"⚠️ Problème de configuration : {e}")
 
-# --- 4. CONFIGURATION DU CONTRAT (SIDEBAR) ---
+# --- 4. PARAMÈTRES (SIDEBAR) ---
 with st.sidebar:
     st.header("⚙️ Paramètres")
     taux_base = st.number_input("Taux horaire de base (€)", value=15.0)
     pays = st.selectbox("Pays", ["France", "Belgique", "Suisse"])
     feries = holidays.CountryHoliday(pays)
 
-# --- 5. INTERFACE DE SAISIE ---
+# --- 5. FORMULAIRE ---
 with st.form("form_saisie", clear_on_submit=True):
     st.subheader("➕ Ajouter une session")
     col1, col2, col3 = st.columns(3)
     d = col1.date_input("Date", datetime.now())
     h1 = col2.time_input("Début", time(18, 0))
     h2 = col3.time_input("Fin", time(22, 0))
-    submit = st.form_submit_button("Enregistrer sur Google Sheets")
+    submit = st.form_submit_button("Enregistrer")
 
-if submit:
-    if conn is None:
-        st.error("La connexion n'est pas établie.")
-    else:
-        h_tot, g_tot = calculer_gain_reel(d, h1, h2, taux_base, feries)
-        nouvelle_ligne = pd.DataFrame([{
-            "Date": d.strftime('%Y-%m-%d'), 
-            "Heures": float(h_tot), 
-            "Gain": float(g_tot)
-        }])
-        
-        df_final = pd.concat([df_existant, nouvelle_ligne], ignore_index=True)
-        
-        try:
-            conn.update(data=df_final)
-            st.success("✅ Enregistré !")
-            st.rerun()
-        except Exception as e:
-            st.error(f"Erreur d'enregistrement : {e}")
+if submit and conn:
+    h_tot, g_tot = calculer_gain_reel(d, h1, h2, taux_base, feries)
+    nouvelle_ligne = pd.DataFrame([{"Date": d.strftime('%Y-%m-%d'), "Heures": float(h_tot), "Gain": float(g_tot)}])
+    df_final = pd.concat([df_existant, nouvelle_ligne], ignore_index=True)
+    
+    try:
+        # On précise à nouveau l'URL pour l'update
+        conn.update(spreadsheet=spreadsheet_url, data=df_final)
+        st.success("✅ Enregistré !")
+        st.rerun()
+    except Exception as e:
+        st.error(f"Erreur d'enregistrement : {e}")
 
-# --- 6. AFFICHAGE DES RÉSULTATS ---
+# --- 6. AFFICHAGE ---
 if not df_existant.empty:
     df_existant['Date'] = pd.to_datetime(df_existant['Date'])
     st.divider()
     st.metric("Gain Cumulé", f"{df_existant['Gain'].sum():.2f} €")
-    
     tab1, tab2 = st.tabs(["📅 Historique", "📈 Stats"])
     with tab1:
         st.dataframe(df_existant.sort_values('Date', ascending=False), use_container_width=True, hide_index=True)
