@@ -8,7 +8,7 @@ from streamlit_gsheets import GSheetsConnection
 st.set_page_config(page_title="Mes Heures Sup", page_icon="⏱️")
 st.title("⏱️ Suivi des Heures")
 
-# --- 2. CONFIGURATION DU CONTRAT (SIDEBAR) ---
+# --- 2. CONFIGURATION DU CONTRAT ---
 with st.sidebar:
     st.header("⚙️ Paramètres")
     taux_base = st.number_input("Taux horaire de base (€)", value=15.0)
@@ -29,7 +29,6 @@ def calculer_gain_reel(date_j, debut, fin, t_base):
     start = datetime.combine(date_j, debut)
     end = datetime.combine(date_j, fin)
     if end <= start: end += timedelta(days=1)
-    
     est_special = (date_j.weekday() == 6 or date_j in feries)
     gain_total = 0
     current_time = start
@@ -41,47 +40,45 @@ def calculer_gain_reel(date_j, debut, fin, t_base):
         current_time += timedelta(minutes=15)
     return (end - start).total_seconds() / 3600, round(gain_total, 2)
 
-# --- 5. CONNEXION (VÉRIFICATION DES SECRETS) ---
+# --- 5. CONNEXION (FORCÉE) ---
 conn = None
 df_existant = pd.DataFrame(columns=["Date", "Heures", "Gain"])
 
 try:
     if "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
+        # On extrait les infos
         creds = dict(st.secrets["connections"]["gsheets"])
         if "private_key" in creds:
             creds["private_key"] = creds["private_key"].replace("\\n", "\n")
         
-        conn = st.connection("gsheets", **creds)
+        # On FORCE l'utilisation de GSheetsConnection explicitement pour éviter ton erreur
+        conn = st.connection("gsheets", type=GSheetsConnection, **creds)
+        
         df_existant = conn.read(ttl=0)
         if df_existant is not None:
             df_existant = df_existant.dropna(how="all")
     else:
-        st.error("❌ Erreur : Les Secrets 'connections.gsheets' sont introuvables dans Streamlit Cloud.")
+        st.error("❌ Secrets 'connections.gsheets' non trouvés.")
 except Exception as e:
     st.error(f"⚠️ Erreur de connexion : {e}")
 
 # --- 6. ACTION D'ENREGISTREMENT ---
-if submit:
-    if conn is None:
-        st.error("Impossible d'enregistrer : La connexion n'est pas établie.")
-    else:
-        h_tot, g_tot = calculer_gain_reel(d, h1, h2, taux_base)
-        nouvelle_ligne = pd.DataFrame([{"Date": d.strftime('%Y-%m-%d'), "Heures": float(h_tot), "Gain": float(g_tot)}])
-        df_final = pd.concat([df_existant, nouvelle_ligne], ignore_index=True)
-        
-        try:
-            conn.update(data=df_final)
-            st.success("✅ Enregistré !")
-            st.rerun()
-        except Exception as e:
-            st.error(f"Erreur lors de l'envoi vers Google : {e}")
+if submit and conn:
+    h_tot, g_tot = calculer_gain_reel(d, h1, h2, taux_base)
+    nouvelle_ligne = pd.DataFrame([{"Date": d.strftime('%Y-%m-%d'), "Heures": float(h_tot), "Gain": float(g_tot)}])
+    df_final = pd.concat([df_existant, nouvelle_ligne], ignore_index=True)
+    try:
+        conn.update(data=df_final)
+        st.success("✅ Enregistré !")
+        st.rerun()
+    except Exception as e:
+        st.error(f"Erreur d'envoi : {e}")
 
-# --- 7. AFFICHAGE DES RÉSULTATS ---
+# --- 7. AFFICHAGE ---
 if not df_existant.empty:
     df_existant['Date'] = pd.to_datetime(df_existant['Date'])
     st.divider()
     st.metric("Gain Cumulé", f"{df_existant['Gain'].sum():.2f} €")
-    
     tab1, tab2 = st.tabs(["📅 Historique", "📈 Stats"])
     with tab1:
         st.dataframe(df_existant.sort_values('Date', ascending=False), use_container_width=True, hide_index=True)
