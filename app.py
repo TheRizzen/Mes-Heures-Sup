@@ -7,9 +7,9 @@ from streamlit_gsheets import GSheetsConnection
 # --- 1. CONFIGURATION ---
 st.set_page_config(page_title="Suivi Heures Sup Enedis", page_icon="⏱️", layout="wide")
 
-# Paramètres extraits de ton bulletin de paie [cite: 28, 63, 67]
-TX_HORAIRE_DEFAUT = 14.18  # Taux horaire de base [cite: 28]
-TX_RETENUE_HS = 0.067      # Retenue réelle de 6.7% sur les HS défiscalisées [cite: 63, 67]
+# Paramètres extraits de ton bulletin de paie
+TX_HORAIRE_DEFAUT = 14.18  # Taux horaire de base
+TX_RETENUE_HS = 0.067      # Retenue réelle de 6.7% sur les HS défiscalisées
 
 MOIS_FR = {
     1: "Janvier", 2: "Février", 3: "Mars", 4: "Avril", 5: "Mai", 6: "Juin",
@@ -77,7 +77,6 @@ def calculer_session(date_j, debut, fin, t_base, feries):
         gain_total += (pas / 60) * (t_base * mult)
         current += timedelta(minutes=pas)
     
-    # Logique Repas Cumulable (Midi 11-13h et Soir 19-21h)
     def verifier_plage(p_start_time, p_end_time):
         p_start = datetime.combine(date_j, p_start_time)
         p_end = datetime.combine(date_j, p_end_time)
