@@ -13,30 +13,38 @@ st.set_page_config(
 
 st.title("⏱️ Suivi des Heures Supplémentaires")
 
-# --- 2. PRÉPARATION DE LA CONNEXION (CORRECTIF) ---
-# Au lieu de modifier st.secrets, on crée une configuration propre pour la connexion
-conf_gsheets = dict(st.secrets["connections"]["gsheets"])
-if "private_key" in conf_gsheets:
-    conf_gsheets["private_key"] = conf_gsheets["private_key"].replace("\\n", "\n")
-
-# Connexion en utilisant notre configuration nettoyée
-conn = st.connection("gsheets", type=GSheetsConnection, **conf_gsheets)
-
-# --- 3. LECTURE DES DONNÉES ---
+# --- 2. LOGIQUE DE CONNEXION SÉCURISÉE ---
+# On récupère les secrets proprement
 try:
+    # On crée un dictionnaire de config à partir des secrets
+    creds_dict = dict(st.secrets["connections"]["gsheets"])
+    
+    # Nettoyage CRITIQUE de la clé privée pour iOS/Streamlit
+    if "private_key" in creds_dict:
+        creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+    
+    # On initialise la connexion avec les paramètres nettoyés
+    conn = st.connection("gsheets", type=GSheetsConnection, **creds_dict)
+    
+    # Lecture des données
     df_existant = conn.read(ttl=0)
-    df_existant = df_existant.dropna(how="all")
-except Exception:
+    if df_existant is not None:
+        df_existant = df_existant.dropna(how="all")
+    else:
+        df_existant = pd.DataFrame(columns=["Date", "Heures", "Gain"])
+        
+except Exception as e:
+    st.error(f"Note : Première connexion ou feuille vide. (Détail : {e})")
     df_existant = pd.DataFrame(columns=["Date", "Heures", "Gain"])
 
-# --- 4. CONFIGURATION DU CONTRAT ---
+# --- 3. CONFIGURATION DU CONTRAT ---
 with st.sidebar:
     st.header("⚙️ Paramètres")
     taux_base = st.number_input("Taux horaire de base (€)", value=15.0)
     pays = st.selectbox("Pays (Jours fériés)", ["France", "Belgique", "Suisse"])
     feries = holidays.CountryHoliday(pays)
 
-# --- 5. LOGIQUE DE CALCUL ---
+# --- 4. LOGIQUE DE CALCUL ---
 def calculer_gain_reel(date_j, debut, fin, t_base):
     start = datetime.combine(date_j, debut)
     end = datetime.combine(date_j, fin)
@@ -59,7 +67,7 @@ def calculer_gain_reel(date_j, debut, fin, t_base):
     duree_totale = (end - start).total_seconds() / 3600
     return duree_totale, round(gain_total, 2)
 
-# --- 6. FORMULAIRE DE SAISIE ---
+# --- 5. FORMULAIRE DE SAISIE ---
 with st.form("form_saisie", clear_on_submit=True):
     st.subheader("➕ Ajouter une session")
     col1, col2, col3 = st.columns(3)
@@ -75,6 +83,8 @@ if submit:
         "Heures": float(h_tot),
         "Gain": float(g_tot)
     }])
+    
+    # Mise à jour
     df_final = pd.concat([df_existant, nouvelle_ligne], ignore_index=True)
     
     try:
@@ -84,17 +94,18 @@ if submit:
     except Exception as e:
         st.error(f"Erreur d'écriture : {e}")
 
-# --- 7. AFFICHAGE ---
+# --- 6. AFFICHAGE ---
 if not df_existant.empty:
     df_existant['Date'] = pd.to_datetime(df_existant['Date'])
     st.divider()
-    st.metric("Gain Cumulé", f"{df_existant['Gain'].sum():.2f} €")
+    
+    c1, c2 = st.columns(2)
+    c1.metric("Heures Totales", f"{df_existant['Heures'].sum()} h")
+    c2.metric("Gain Cumulé", f"{df_existant['Gain'].sum():.2f} €")
     
     tab1, tab2 = st.tabs(["📅 Historique", "📈 Statistiques"])
     with tab1:
         st.dataframe(df_existant.sort_values('Date', ascending=False), use_container_width=True, hide_index=True)
     with tab2:
-        recap_mensuel = df_existant.set_index('Date').resample('ME').sum()
-        st.bar_chart(recap_mensuel['Gain'])
-else:
-    st.info("👋 Saisis tes premières heures pour commencer !")
+        df_m = df_existant.set_index('Date').resample('ME').sum()
+        st.bar_chart(df_m['Gain'])
