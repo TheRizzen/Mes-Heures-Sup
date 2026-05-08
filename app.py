@@ -26,19 +26,23 @@ def calculer_gain_reel(date_j, debut, fin, t_base, feries):
         current_time += timedelta(minutes=15)
     return (end - start).total_seconds() / 3600, round(gain_total, 2)
 
-# --- 3. CONNEXION ---
+# --- 3. CONNEXION (SOLUTION AU CONFLIT 'TYPE') ---
 conn = None
 df_existant = pd.DataFrame(columns=["Date", "Heures", "Gain"])
 
 try:
-    s = st.secrets["connections"]["gsheets"]
+    # On crée une copie modifiable des secrets
+    s = dict(st.secrets["connections"]["gsheets"])
     
-    # Reconstruction des credentials avec nettoyage de la clé
-    creds = {
-        "type": s["type"],
+    # Nettoyage de la clé privée
+    private_key = s["private_key"].replace("\\n", "\n").strip()
+    
+    # On prépare un dictionnaire de credentials SANS la clé 'type'
+    # pour éviter le message "multiple values for keyword argument 'type'"
+    creds_pour_connexion = {
         "project_id": s["project_id"],
         "private_key_id": s["private_key_id"],
-        "private_key": s["private_key"].replace("\\n", "\n").strip(),
+        "private_key": private_key,
         "client_email": s["client_email"],
         "client_id": s["client_id"],
         "auth_uri": s["auth_uri"],
@@ -47,7 +51,10 @@ try:
         "client_x509_cert_url": s["client_x509_cert_url"]
     }
     
-    conn = st.connection("gsheets", type=GSheetsConnection, **creds)
+    # On initialise la connexion
+    conn = st.connection("gsheets", type=GSheetsConnection, **creds_pour_connexion)
+    
+    # Lecture
     df_existant = conn.read(spreadsheet=s["spreadsheet"], ttl=0)
     if df_existant is not None:
         df_existant = df_existant.dropna(how="all")
