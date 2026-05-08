@@ -24,44 +24,43 @@ def calculer_gain_reel(date_j, debut, fin, t_base, feries):
         taux = (2.25 if est_nuit else 1.75) if est_special else (2.0 if est_nuit else 1.50)
         gain_total += 0.25 * (t_base * taux)
         current_time += timedelta(minutes=15)
-    
     return (end - start).total_seconds() / 3600, round(gain_total, 2)
 
-# --- 3. CONNEXION (MÉTHODE MANUELLE SANS ARGUMENTS INATTENDUS) ---
+# --- 3. CONNEXION ---
 conn = None
 df_existant = pd.DataFrame(columns=["Date", "Heures", "Gain"])
 
 try:
-    # On récupère le dictionnaire brut
-    conf = dict(st.secrets["connections"]["gsheets"])
+    s = st.secrets["connections"]["gsheets"]
     
-    # On prépare l'URL de la feuille (car conn.read() en a besoin)
-    spreadsheet_url = conf.get("spreadsheet")
-
-    # On crée la connexion de base
-    conn = st.connection("gsheets", type=GSheetsConnection)
+    # Reconstruction des credentials avec nettoyage de la clé
+    creds = {
+        "type": s["type"],
+        "project_id": s["project_id"],
+        "private_key_id": s["private_key_id"],
+        "private_key": s["private_key"].replace("\\n", "\n").strip(),
+        "client_email": s["client_email"],
+        "client_id": s["client_id"],
+        "auth_uri": s["auth_uri"],
+        "token_uri": s["token_uri"],
+        "auth_provider_x509_cert_url": s["auth_provider_x509_cert_url"],
+        "client_x509_cert_url": s["client_x509_cert_url"]
+    }
     
-    # ON INJECTE LES SECRETS NETTOYÉS DIRECTEMENT DANS LE MOTEUR
-    # C'est la seule façon d'éviter l'erreur 'project_id' tout en nettoyant la clé
-    if "private_key" in conf:
-        conf["private_key"] = conf["private_key"].strip().replace("\\n", "\n")
-    
-    # Lecture des données en passant l'URL explicitement
-    df_existant = conn.read(spreadsheet=spreadsheet_url, ttl=0)
-    
+    conn = st.connection("gsheets", type=GSheetsConnection, **creds)
+    df_existant = conn.read(spreadsheet=s["spreadsheet"], ttl=0)
     if df_existant is not None:
         df_existant = df_existant.dropna(how="all")
 except Exception as e:
-    st.error(f"⚠️ Problème de configuration : {e}")
+    st.error(f"⚠️ Erreur de configuration : {e}")
 
-# --- 4. PARAMÈTRES (SIDEBAR) ---
+# --- 4. INTERFACE ---
 with st.sidebar:
     st.header("⚙️ Paramètres")
     taux_base = st.number_input("Taux horaire de base (€)", value=15.0)
     pays = st.selectbox("Pays", ["France", "Belgique", "Suisse"])
     feries = holidays.CountryHoliday(pays)
 
-# --- 5. FORMULAIRE ---
 with st.form("form_saisie", clear_on_submit=True):
     st.subheader("➕ Ajouter une session")
     col1, col2, col3 = st.columns(3)
@@ -76,14 +75,13 @@ if submit and conn:
     df_final = pd.concat([df_existant, nouvelle_ligne], ignore_index=True)
     
     try:
-        # On précise à nouveau l'URL pour l'update
-        conn.update(spreadsheet=spreadsheet_url, data=df_final)
+        conn.update(spreadsheet=st.secrets["connections"]["gsheets"]["spreadsheet"], data=df_final)
         st.success("✅ Enregistré !")
         st.rerun()
     except Exception as e:
         st.error(f"Erreur d'enregistrement : {e}")
 
-# --- 6. AFFICHAGE ---
+# --- 5. AFFICHAGE ---
 if not df_existant.empty:
     df_existant['Date'] = pd.to_datetime(df_existant['Date'])
     st.divider()
