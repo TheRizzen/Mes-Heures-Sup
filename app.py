@@ -25,13 +25,15 @@ try:
     
     if df_raw is not None:
         df_raw = df_raw.dropna(how="all")
-        # On force la conversion en s'assurant que le jour est bien interprété en premier
         df_raw['Date'] = pd.to_datetime(df_raw['Date'], dayfirst=True, errors='coerce')
+        # Si la colonne Taux_Base n'existe pas encore dans ton vieux fichier, on la crée
+        if 'Taux_Base' not in df_raw.columns:
+            df_raw['Taux_Base'] = 15.0 # Valeur par défaut pour l'ancien historique
     else:
-        df_raw = pd.DataFrame(columns=["Date", "Heures", "Gain"])
+        df_raw = pd.DataFrame(columns=["Date", "Heures", "Gain", "Taux_Base"])
 except Exception as e:
     st.error(f"⚠️ Erreur : {e}")
-    df_raw = pd.DataFrame(columns=["Date", "Heures", "Gain"])
+    df_raw = pd.DataFrame(columns=["Date", "Heures", "Gain", "Taux_Base"])
 
 # --- 3. LOGIQUE DE CALCUL ---
 def calculer_gain(date_j, debut, fin, t_base, feries):
@@ -43,15 +45,16 @@ def calculer_gain(date_j, debut, fin, t_base, feries):
         est_special = (current.weekday() == 6 or current.date() in feries)
         h = current.hour
         est_nuit = (h >= 20 or h < 6)
-        taux = (2.25 if est_nuit else 1.75) if est_special else (2.00 if est_nuit else 1.50)
-        gain_total += (pas / 60) * (t_base * taux)
+        taux_mult = (2.25 if est_nuit else 1.75) if est_special else (2.00 if est_nuit else 1.50)
+        gain_total += (pas / 60) * (t_base * taux_mult)
         current += timedelta(minutes=pas)
     return round((end - start).total_seconds() / 3600, 2), round(gain_total, 2)
 
 # --- 4. INTERFACE ---
 with st.sidebar:
     st.title("⏱️ Menu")
-    t_base = st.number_input("Taux horaire (€)", value=15.0)
+    # Ce taux servira uniquement pour les PROCHAINES saisies
+    taux_actuel = st.number_input("Taux horaire actuel (€)", value=15.0)
     pays = st.selectbox("Jours fériés", ["France", "Belgique", "Suisse"])
     feries_liste = holidays.CountryHoliday(pays)
     mode = st.radio("Navigation", ["Saisie", "Gestion", "Récapitulatif Détaillé"])
@@ -59,26 +62,32 @@ with st.sidebar:
 # --- MODE : SAISIE ---
 if mode == "Saisie":
     st.header("➕ Ajouter des Heures")
+    st.info(f"Le gain sera calculé avec votre taux actuel de {taux_actuel}€")
     with st.form("f_saisie", clear_on_submit=True):
         col1, col2, col3 = st.columns(3)
         d = col1.date_input("Date", datetime.now())
         h1 = col2.time_input("Début", time(18, 0))
         h2 = col3.time_input("Fin", time(22, 0))
         if st.form_submit_button("Enregistrer"):
-            h_tot, g_tot = calculer_gain(d, h1, h2, t_base, feries_liste)
-            # ON FORCE LE FORMAT ISO ICI (YYYY-MM-DD)
-            new_row = pd.DataFrame([{"Date": d.strftime('%Y-%m-%d'), "Heures": h_tot, "Gain": g_tot}])
-            df_raw['Date'] = df_raw['Date'].dt.strftime('%Y-%m-%d') # On uniformise l'existant
+            h_tot, g_tot = calculer_gain(d, h1, h2, taux_actuel, feries_liste)
+            # On enregistre le taux utilisé dans la ligne
+            new_row = pd.DataFrame([{
+                "Date": d.strftime('%Y-%m-%d'), 
+                "Heures": h_tot, 
+                "Gain": g_tot,
+                "Taux_Base": taux_actuel
+            }])
             df_final = pd.concat([df_raw, new_row], ignore_index=True)
+            # Nettoyage format date avant envoi
+            df_final['Date'] = pd.to_datetime(df_final['Date']).dt.strftime('%Y-%m-%d')
             conn.update(spreadsheet=url, data=df_final)
-            st.success("Validé !")
+            st.success(f"Validé ! Gain calculé à {taux_actuel}€/h")
             st.rerun()
 
 # --- MODE : GESTION ---
 elif mode == "Gestion":
     st.header("⚙️ Modifier / Supprimer")
     if not df_raw.empty:
-        # On prépare pour l'éditeur
         df_edit = df_raw.copy()
         df_edit['Date'] = pd.to_datetime(df_edit['Date'])
         
@@ -86,11 +95,13 @@ elif mode == "Gestion":
             df_edit, 
             num_rows="dynamic", 
             use_container_width=True,
-            column_config={"Date": st.column_config.DateColumn("Date", format="DD/MM/YYYY")}
+            column_config={
+                "Date": st.column_config.DateColumn("Date", format="DD/MM/YYYY"),
+                "Taux_Base": st.column_config.NumberColumn("Taux utilisé", format="%.2f €")
+            }
         )
         
         if st.button("Sauvegarder les changements"):
-            # On reconvertit en texte ISO avant d'envoyer à Google
             edited['Date'] = pd.to_datetime(edited['Date']).dt.strftime('%Y-%m-%d')
             conn.update(spreadsheet=url, data=edited)
             st.success("Mise à jour réussie")
@@ -119,7 +130,9 @@ elif mode == "Récapitulatif Détaillé":
             df_m = df_ans[df_ans['Mois_Num'] == sel_m_num]
 
         st.divider()
-        st.metric(f"Total {sel_mois_nom}", f"{df_m['Gain'].sum():.2f} €")
+        col_m1, col_m2 = st.columns(2)
+        col_m1.metric(f"Total {sel_mois_nom}", f"{df_m['Gain'].sum():.2f} €")
+        col_m2.metric("Heures cumulées", f"{df_m['Heures'].sum():.2f} h")
 
         st.subheader("📁 Détail par semaine")
         sems = sorted(df_m['Semaine'].unique())
@@ -128,4 +141,5 @@ elif mode == "Récapitulatif Détaillé":
             total_s = df_s['Gain'].sum()
             with st.expander(f"Semaine {s} — Total : {total_s:.2f} €"):
                 df_s['Jour'] = df_s['Date'].apply(lambda x: f"{JOURS_FR[x.weekday()]} {x.day}")
-                st.table(df_s[['Jour', 'Heures', 'Gain']].set_index('Jour'))
+                # On affiche aussi le taux utilisé pour info
+                st.table(df_s[['Jour', 'Heures', 'Taux_Base', 'Gain']].set_index('Jour'))
